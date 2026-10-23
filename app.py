@@ -21,7 +21,45 @@ def load_assets():
 
 model, vectorizer = load_assets()
 
-# كلاس تقرير PDF الجنائي المعتمد لـ SOC
+# عينة بريد خام مدمجة للتجربة الفورية
+SAMPLE_EML_RAW = b'''From: "Microsoft Security Center" <security-alerts@account-protection-verify.com>
+To: "Corporate User" <employee@enterprise.local>
+Reply-To: "Security Desk" <credential-harvester@stealth-inbox.xyz>
+Subject: CRITICAL: Your Office365 Session Expired - Immediate Re-Authentication Required
+Date: Fri, 24 Oct 2026 09:12:00 +0300
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="====SAMPLE_SOC_ALERT===="
+
+--====SAMPLE_SOC_ALERT====
+Content-Type: text/plain; charset="utf-8"
+
+Dear User,
+
+Your corporate session has encountered an unexpected sync failure.
+Access to your company mailbox and OneDrive documents has been locked.
+
+You must verify your authentication details immediately within the next 24 hours to prevent account deactivation.
+
+Secure Sign-In Portal:
+http://198.51.100.45/auth/corporate-login.php
+
+Failure to complete this verification immediately will lead to your account being suspended.
+
+Regards,
+Security Operations Center
+IT Infrastructure Support
+
+--====SAMPLE_SOC_ALERT====
+Content-Type: application/octet-stream; name="Urgent_Account_Verification_Instructions.pdf.exe"
+Content-Disposition: attachment; filename="Urgent_Account_Verification_Instructions.pdf.exe"
+Content-Transfer-Encoding: base64
+
+TVqQAAMAAAAEAAAA//8AALgAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+AAAA2AAAAA4fug4AtAnNIbgBTM0hVGhpcyBwcm9ncmFtIGNhbm5vdCBiZSBydW4gaW4gRE9TIG1v
+ZGUuDQ0KJAAAAAAAAAA=
+--====SAMPLE_SOC_ALERT====--'''
+
+# كلاس تقرير PDF
 class SOCReportPDF(FPDF):
     def header(self):
         self.set_font('Helvetica', 'B', 15)
@@ -97,7 +135,7 @@ def generate_pdf_report(incident_id, timestamp, verdict, risk_score, sender, sub
     pdf.cell(0, 7, 'Recommended SOC Remediation Steps', 1, new_x="LMARGIN", new_y="NEXT", fill=True)
     pdf.set_font('Helvetica', '', 10)
     remediation_text = (
-        "1. Block extracted malicious URLs and file hashes (SHA-256) on EDR and Perimeter Gateway.\n"
+        "1. Block extracted malicious URLs and file hashes (SHA-256) on Perimeter Gateway & EDR.\n"
         "2. Query SIEM logs for any host executing or writing these attachment hashes to disk.\n"
         "3. Isolate affected endpoints immediately if malicious payload execution is confirmed.\n"
         "4. Purge the suspicious message across all enterprise mailboxes."
@@ -106,13 +144,11 @@ def generate_pdf_report(incident_id, timestamp, verdict, risk_score, sender, sub
     
     return bytes(pdf.output())
 
-# استخراج الترويسات والمحتوى والمرفقات
 def parse_eml(file_bytes):
     msg = BytesParser(policy=policy.default).parsebytes(file_bytes)
     sender = msg.get('From', '')
     reply_to = msg.get('Reply-To', '')
     subject = msg.get('Subject', '')
-    
     body = ""
     attachments = []
     
@@ -120,8 +156,6 @@ def parse_eml(file_bytes):
         for part in msg.walk():
             ctype = part.get_content_type()
             cdispo = str(part.get('Content-Disposition', ''))
-            
-            # فحص المرفقات
             if 'attachment' in cdispo or part.get_filename():
                 filename = part.get_filename() or "unnamed_attachment"
                 payload = part.get_payload(decode=True)
@@ -143,7 +177,6 @@ def parse_eml(file_bytes):
         
     return sender, reply_to, subject, body, attachments
 
-# فحص الروابط عبر VirusTotal
 def check_url_virustotal(url: str, api_key: str) -> dict:
     if not api_key:
         return {"status": "skipped", "message": "No API Key provided"}
@@ -166,7 +199,6 @@ def check_url_virustotal(url: str, api_key: str) -> dict:
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# فحص الهاش عبر VirusTotal
 def check_hash_virustotal(file_hash: str, api_key: str) -> dict:
     if not api_key:
         return {"status": "skipped", "message": "No API Key provided"}
@@ -188,57 +220,132 @@ def check_hash_virustotal(file_hash: str, api_key: str) -> dict:
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+# إدارة حالة المدخلات (Session State)
+if "sample_sender" not in st.session_state:
+    st.session_state.sample_sender = ""
+if "sample_reply_to" not in st.session_state:
+    st.session_state.sample_reply_to = ""
+if "sample_subject" not in st.session_state:
+    st.session_state.sample_subject = ""
+if "sample_body" not in st.session_state:
+    st.session_state.sample_body = ""
+if "use_demo_eml" not in st.session_state:
+    st.session_state.use_demo_eml = False
+
+def load_manual_sample():
+    st.session_state.sample_sender = "security-update@paypal-verification-alert.com"
+    st.session_state.sample_reply_to = "attacker-box@dropmail-inbox.xyz"
+    st.session_state.sample_subject = "Urgent: Your Account Has Been Suspended - Action Required"
+    st.session_state.sample_body = (
+        "Dear Customer,\n\n"
+        "We have detected unauthorized transactions on your account from an unrecognized IP address.\n"
+        "To prevent permanent restriction, you must verify your identity immediately within the next 24 hours.\n\n"
+        "Click here immediately to restore access:\n"
+        "http://192.168.1.105/auth/verify-account.php\n\n"
+        "If you do not complete this verification immediately, your funds will remain locked.\n\n"
+        "Security Team\nCustomer Protection Operations"
+    )
+
+def clear_manual_sample():
+    st.session_state.sample_sender = ""
+    st.session_state.sample_reply_to = ""
+    st.session_state.sample_subject = ""
+    st.session_state.sample_body = ""
+
 # القائمة الجانبية
 with st.sidebar:
     st.header("⚙️ Security Integrations")
-    vt_api_key = st.text_input("VirusTotal API Key (Optional):", type="password", help="مفتاح VirusTotal المجاني لفحص الروابط وبصمات المرفقات حياً.")
-    st.info("فحص المرفقات والروابط يعمل محلياً بالامتدادات والأنماط، ويفحص الهاش حياً عبر السحابة في حال إدخال المفتاح.")
+    vt_api_key = st.text_input("VirusTotal API Key (Optional):", type="password", help="ضع مفتاح VT المجاني لتفعيل فحص الروابط وبصمات المرفقات حياً.")
+    st.info("فحص المرفقات والروابط يعمل محلياً، ويفحص حياً عبر السحابة في حال إدخال المفتاح.")
 
 st.title("🛡️ AI Phishing & Malware SOC Incident Detector")
 st.markdown("تحليل الإيميلات المشبوهة، تشريح المرفقات وحساب SHA-256، وفحص السمعة الرقمية عبر VirusTotal.")
 
-tab1, tab2 = st.tabs(["📁 Upload .EML File", "✍️ Manual Email Input"])
+tab1, tab2 = st.tabs(["📁 Upload / Test .EML File", "✍️ Manual Email Input"])
 
 sender = ""
 reply_to = ""
 subject = ""
 email_body = ""
 parsed_attachments = []
-uploaded_file = None
+active_source = ""
 
 with tab1:
+    st.markdown("Upload your own `.eml` file, or click **Use Demo EML** to test an embedded malicious sample:")
+    btn_col1, btn_col2 = st.columns([1, 4])
+    with btn_col1:
+        if st.button("🧪 Use Demo .EML", help="تحميل عينة بريد خبيثة مدمجة تحوي مرفق .pdf.exe وروابط احتيال"):
+            st.session_state.use_demo_eml = True
+    with btn_col2:
+        if st.session_state.use_demo_eml:
+            if st.button("🔄 Reset Demo"):
+                st.session_state.use_demo_eml = False
+                st.rerun()
+
     uploaded_file = st.file_uploader("Upload raw email file (.eml)", type=['eml'])
+
     if uploaded_file is not None:
+        st.session_state.use_demo_eml = False
         try:
             file_bytes = uploaded_file.read()
             sender, reply_to, subject, email_body, parsed_attachments = parse_eml(file_bytes)
-            st.success("File parsed successfully! Extracted metadata and attachments are shown below:")
-            col_a, col_b = st.columns(2)
-            col_a.text_input("Extracted Sender:", value=sender, disabled=True)
-            col_a.text_input("Extracted Subject:", value=subject, disabled=True)
-            col_b.text_input("Extracted Reply-To:", value=reply_to, disabled=True)
-            st.text_area("Extracted Body Preview:", value=email_body[:500] + ("..." if len(email_body) > 500 else ""), height=90, disabled=True)
-            
-            if parsed_attachments:
-                st.info(f"📎 Extracted {len(parsed_attachments)} Attachment(s):")
-                for att in parsed_attachments:
-                    st.code(f"Filename: {att['filename']} | Size: {att['size_kb']} KB\nSHA-256: {att['sha256']}", language="bash")
+            active_source = f"Uploaded File ({uploaded_file.name})"
+            st.success("File parsed successfully!")
         except Exception as e:
-            st.error(f"Error parsing .eml file: {str(e)}")
+            st.error(f"Error parsing .eml: {str(e)}")
+    elif st.session_state.use_demo_eml:
+        sender, reply_to, subject, email_body, parsed_attachments = parse_eml(SAMPLE_EML_RAW)
+        active_source = "Pre-loaded Demo .EML Sample"
+        st.info("⚡ Active: Pre-loaded Demo .EML (Malicious Attachment + Phishing Link)")
+
+    if sender or email_body or parsed_attachments:
+        col_a, col_b = st.columns(2)
+        col_a.text_input("Extracted Sender:", value=sender, disabled=True)
+        col_a.text_input("Extracted Subject:", value=subject, disabled=True)
+        col_b.text_input("Extracted Reply-To:", value=reply_to, disabled=True)
+        st.text_area("Extracted Body Preview:", value=email_body[:400] + ("..." if len(email_body) > 400 else ""), height=80, disabled=True)
+        if parsed_attachments:
+            st.warning(f"📎 Extracted {len(parsed_attachments)} Attachment(s):")
+            for att in parsed_attachments:
+                st.code(f"Filename: {att['filename']} | Size: {att['size_kb']} KB\nSHA-256: {att['sha256']}", language="bash")
 
 with tab2:
-    if uploaded_file is None:
-        col1, col2 = st.columns(2)
-        with col1:
-            sender = st.text_input("Sender Email:", placeholder="billing@payroll-portal.com")
-            subject = st.text_input("Subject:", placeholder="Urgent: Invoice Overdue")
-        with col2:
-            reply_to = st.text_input("Reply-To Email (Optional):", placeholder="collector@stealth-inbox.xyz")
-        email_body = st.text_area("Email Content:", height=150, placeholder="Paste email body or headers here...")
+    btn_m1, btn_m2, _ = st.columns([1.2, 1, 4])
+    with btn_m1:
+        st.button("🧪 Load Sample Email", on_click=load_manual_sample, help="تعبئة بيانات بريد تصيد احتيالي تجريبي تلقائياً")
+    with btn_m2:
+        st.button("🗑️ Clear", on_click=clear_manual_sample)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        sender_input = st.text_input("Sender Email:", value=st.session_state.sample_sender, placeholder="support@service-update.com")
+        subject_input = st.text_input("Subject:", value=st.session_state.sample_subject, placeholder="Urgent: Security Verification Required")
+    with col2:
+        reply_to_input = st.text_input("Reply-To Email (Optional):", value=st.session_state.sample_reply_to, placeholder="attacker@drop-mailbox.xyz")
+    
+    body_input = st.text_area("Email Content:", value=st.session_state.sample_body, height=140, placeholder="Paste email body or headers here...")
+    
+    if not active_source and body_input.strip():
+        sender = sender_input
+        reply_to = reply_to_input
+        subject = subject_input
+        email_body = body_input
+        active_source = "Manual Input"
+
+st.markdown("---")
 
 if st.button("🔍 Scan Email & Investigate Threats", use_container_width=True):
+    # إذا لم تكن البيانات مأخوذة من التبويب الأول، نأخذها من التبويب الثاني
     if not email_body.strip() and not parsed_attachments:
-        st.warning("Please upload an .eml file or enter email content.")
+        if body_input.strip():
+            sender = sender_input
+            reply_to = reply_to_input
+            subject = subject_input
+            email_body = body_input
+            active_source = "Manual Input"
+
+    if not email_body.strip() and not parsed_attachments:
+        st.warning("Please provide email content or click 'Load Sample Email' to test.")
     else:
         indicators = []
         heuristic_score = 0
@@ -250,23 +357,18 @@ if st.button("🔍 Scan Email & Investigate Threats", use_container_width=True):
             heuristic_score += 30
             indicators.append(f"Mismatched Header: Sender ({sender}) differs from Reply-To ({reply_to})")
 
-        # 2. فحص المرفقات الأمنية (Extensions & Hashes)
+        # 2. فحص المرفقات
         dangerous_exts = ['.exe', '.scr', '.iso', '.vbs', '.js', '.bat', '.ps1', '.cmd', '.hta', '.jar']
         for att in parsed_attachments:
             fname = att['filename'].lower()
             fhash = att['sha256']
-            
-            # الامتدادات الخطرة
             if any(fname.endswith(ext) for ext in dangerous_exts):
                 heuristic_score += 50
                 indicators.append(f"High-Risk Executable Attachment: {att['filename']}")
-            
-            # الامتدادات المزدوجة (Double Extensions)
             if re.search(r'\.[a-z0-9]{2,4}\.(exe|scr|vbs|bat|js)$', fname):
                 heuristic_score += 60
                 indicators.append(f"Double Extension Masquerading Detected: {att['filename']}")
 
-            # فحص الهاش عبر VirusTotal
             if vt_api_key:
                 h_res = check_hash_virustotal(fhash, vt_api_key)
                 vt_hash_results.append({"filename": att['filename'], "hash": fhash, "result": h_res})
@@ -293,8 +395,8 @@ if st.button("🔍 Scan Email & Investigate Threats", use_container_width=True):
                     heuristic_score += 40
                     indicators.append(f"VirusTotal URL Alert: {u} flagged malicious by {u_res.get('malicious')} engines.")
 
-        # 4. عبارات الاستعجال
-        urgency_terms = ['urgent', 'immediately', 'suspended', 'locked', 'action required', '24 hours', 'verify identity', 'invoice']
+        # 4. لغة الاستعجال
+        urgency_terms = ['urgent', 'immediately', 'suspended', 'locked', 'action required', '24 hours', 'verify identity', 'expired']
         found_terms = [t for t in urgency_terms if t in (subject + " " + email_body).lower()]
         if found_terms:
             heuristic_score += 15
@@ -308,9 +410,7 @@ if st.button("🔍 Scan Email & Investigate Threats", use_container_width=True):
         total_risk = min(int((ai_prob * 40) + (heuristic_score * 0.6)), 100)
         verdict = "PHISHING / MALICIOUS" if (total_risk >= 50 or ai_prob >= 0.70) else "CLEAN / LEGITIMATE"
 
-        st.markdown("---")
         st.subheader("📊 Investigation Summary")
-
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total Risk Score", f"{total_risk}%")
         m2.metric("AI Confidence", f"{ai_prob * 100:.1f}%")
@@ -322,9 +422,8 @@ if st.button("🔍 Scan Email & Investigate Threats", use_container_width=True):
         else:
             st.success(f"✅ **Verdict: {verdict}**")
 
-        # تفاصيل فحص المرفقات والهاشات
         if vt_hash_results:
-            st.subheader("🧬 Attachment Threat Intelligence (VirusTotal Hashes):")
+            st.subheader("🧬 Attachment Threat Intelligence:")
             for item in vt_hash_results:
                 fname = item["filename"]
                 r = item["result"]
@@ -344,7 +443,7 @@ if st.button("🔍 Scan Email & Investigate Threats", use_container_width=True):
         soc_report = {
             "incident_id": incident_id,
             "timestamp": now_time + " UTC",
-            "source_type": ".eml upload" if uploaded_file else "manual input",
+            "source_type": active_source,
             "analyst_assessment": {
                 "verdict": verdict,
                 "total_risk_score": f"{total_risk}/100",
